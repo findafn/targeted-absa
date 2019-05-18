@@ -4,6 +4,8 @@ from sentiment.SentimentClassifier import SentimentClassifier
 import time
 import tensorflow as tf
 from keras import backend as k
+from keras.callbacks import ModelCheckpoint
+from sklearn.model_selection import train_test_split
 
 if __name__ == '__main__':
     config = tf.ConfigProto()
@@ -21,17 +23,19 @@ if __name__ == '__main__':
         remove_punct = True,
         embedding = True,
         trainable_embedding = True,
-        pos_tag = 'embedding',
+        pos_tag = None,
         dependency = False,
         use_entity = True,
-        use_lexicon = True,
+        position_embd = True,
+        mask_entity = False,
+        use_lexicon = False,
         use_rnn = True,
         rnn_type = 'lstm',
         use_cnn = False,
         use_svm = False,
         use_stacked_svm = False,
         use_attention = False,
-        n_neuron = 256,
+        n_neuron = 128,
         n_dense = 1,
         dropout = 0.5,
         regularizer = None,
@@ -39,19 +43,31 @@ if __name__ == '__main__':
         )
 
     x_train, y_train, x_test, y_test = model.preprocessor.get_all_input_sentiment()
+    
+    checkpoint = ModelCheckpoint(
+        'sentiment/model/callback/model.h5', 
+        monitor='val_acc', 
+        verbose=0, 
+        save_best_only=True, 
+        mode='max', 
+        period=1
+    )
 
     model.train(
         x_train, 
         y_train,
-        batch_size = 32,
-        epochs = 6,
+        batch_size = 16,
+        epochs = 10,
         verbose = 1,
-        validation_split = 0.0,
+        validation_data = True,
         cross_validation = False,
         n_fold = 3,
         grid_search = False,
         callbacks = None
         )
+
+    # model.load('model/context')
+        
     model.evaluate(x_train, y_train, x_test, y_test)
 
     named_tuple = time.localtime()

@@ -5,6 +5,7 @@ import time
 import tensorflow as tf
 from keras import backend as k
 from sklearn.model_selection import train_test_split
+from keras.callbacks import ModelCheckpoint
 
 from sklearn.model_selection import ParameterGrid
 
@@ -17,66 +18,58 @@ if __name__ == '__main__':
 
     k.tensorflow_backend.set_session(tf.Session(config=config))
 
-    param_grid = {
-    'epochs' : [10,15],
-    'batch_size': [16,32], 
-    'dropout': [0.3,0.5,0.7], 
-    'neuron_unit': [128,256]
-    }
+    model = AspectCategorizer(
+        train_file = 'data/entity_train.json',
+        test_file= 'data/entity_test.json',
+        lowercase = True,
+        remove_punct = True,
+        embedding = True,
+        trainable_embedding = False,
+        pos_tag = None,
+        dependency = False,
+        use_entity = True,
+        postion_embd = True,
+        mask_entity = False,    
+        use_rnn = True,
+        rnn_type = 'lstm',
+        use_cnn = False,
+        use_svm = False,
+        use_stacked_svm = False,
+        use_attention = False,
+        n_neuron = 128,
+        n_dense = 1,
+        dropout = 0.5,
+        regularizer = None,
+        optimizer = 'adam'
+        )
 
-    grid = ParameterGrid(param_grid)
-    with open('result_asp_gs.txt', 'w') as f:
-        for i, params in enumerate(grid):
-            print(i)
-            f.write(str(i) + "\n")
-            print(params)
-            model = AspectCategorizer(
-                train_file = 'data/entity_train.json',
-                test_file= 'data/entity_test.json',
-                lowercase = True,
-                remove_punct = True,
-                embedding = True,
-                trainable_embedding = True,
-                pos_tag = 'embedding',
-                dependency = False,
-                use_entity = True,
-                postion_embd = True,
-                mask_entity = False,    
-                use_rnn = True,
-                rnn_type = 'lstm',
-                use_cnn = False,
-                use_svm = False,
-                use_stacked_svm = False,
-                use_attention = False,
-                n_neuron = params['neuron_unit'],
-                n_dense = 1,
-                dropout = params['dropout'],
-                regularizer = None,
-                optimizer = 'adam'
-                )
+    x_train, y_train, x_test, y_test = model.preprocessor.get_all_input_aspect()
 
-            x_train, y_train, x_test, y_test = model.preprocessor.get_all_input_aspect()
+    checkpoint = ModelCheckpoint(
+        'aspect/model/callbacks/model_nomask_notrain.h5', 
+        monitor='val_f1', 
+        verbose=0, 
+        save_best_only=True, 
+        mode='max', 
+        period=1
+    )
 
-            model.train(
-                x_train, 
-                y_train,
-                batch_size = params['batch_size'],
-                epochs = params['epochs'],
-                verbose = 1,
-                validation_data = True,
-                cross_validation = False,
-                n_fold = 3,
-                grid_search = False,
-                callbacks = None
-                )
+    model.train(
+        x_train, 
+        y_train,
+        batch_size = 16,
+        epochs = 10,
+        verbose = 1,
+        validation_data = False,
+        cross_validation = False,
+        n_fold = 10,
+        grid_search = False,
+        callbacks = checkpoint
+        )
 
-            # x_train, x_val, y_train, y_val = train_test_split(x_train, y_train, test_size=0.1, random_state=70)
+    # model.load('aspect/model/nomasking_train')
 
-            # model.load('aspect/model/April-18-2019_16-54-37')
-            print(params)
-            prec, rec, f1 = model.evaluate(x_train, y_train, x_test, y_test)
-            f.write(str(params) + ' : ' + str(prec) + ' ' + str(rec) + ' ' + str(f1) + "\n")
-
+    # model.evaluate(x_train, y_train, x_test, y_test)
     # model.evaluate_each_aspect(x_test, y_test)
 
     # named_tuple = time.localtime()

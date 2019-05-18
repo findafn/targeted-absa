@@ -4,11 +4,13 @@ from metrics import f1
 
 import tensorflow as tf
 import numpy as np
+import requests
 import json
 import os
+import re
 
 from sklearn.metrics import f1_score, recall_score, precision_score, accuracy_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
 
 import keras
 from keras import backend as K
@@ -72,6 +74,7 @@ class AspectCategorizer():
         self.history = None
         self.result = None
         self.module_name = 'aspect'
+        self.entity_list = self.preprocessor.list_entity()
 
         self.embedding = embedding
         self.trainable_embedding = trainable_embedding
@@ -140,12 +143,11 @@ class AspectCategorizer():
         ]
         return {k: getattr(self, k) for k in keys}
 
-    def __build_model(self):
+    def __build_model(self, embedding_matrix):
         print("Building the model...")
         vocab_size = self.preprocessor.get_vocab_size(self.tokenizer)
 
         if self.embedding:
-            embedding_matrix = self.preprocessor.get_embedding_matrix(self.tokenizer)
             main_input = Input(shape=(MAX_LENGTH,), dtype='int32', name='main_input')
             x = Embedding(
                 output_dim=EMBEDDING_SIZE,
@@ -263,15 +265,15 @@ class AspectCategorizer():
         self.cross_validation = cross_validation
         self.n_fold = n_fold
         self.grid_search = grid_search
-        self.callbacks = callbacks
+        self.callbacks == callbacks
 
-        model = self.__build_model()
+        embedding_matrix = self.preprocessor.get_embedding_matrix(self.tokenizer)
 
         print("Training...")
 
         x_input = list()
 
-        if self.validation_data:
+        if self.validation_data and self.callbacks == 'None':
             input_val = list()
             x_train, x_val, y_train, y_val = train_test_split(x_train, y_train, test_size=0.1, random_state=70)
             input_val.append(x_val)
@@ -284,31 +286,67 @@ class AspectCategorizer():
             else:       
                 position_train = self.preprocessor.get_positional_embedding_without_masking(self.preprocessor.train_file) 
 
-            if self.validation_data:
+            if self.validation_data and self.callbacks == 'None':
                 position_train, position_val = train_test_split(position_train, test_size=0.1, random_state=70)    
                 input_val.append(position_val)
             x_input.append(position_train)
 
         if self.pos_tag == 'embedding':
             pos_train = self.preprocessor.read_pos('resource/postag_train_auto.json')   
-            if self.validation_data:
+            if self.validation_data and self.callbacks == 'None':
                 pos_train, pos_val = train_test_split(pos_train, test_size=0.1, random_state=70)
                 input_val.append(pos_val)
             x_input.append(pos_train)
 
-        history = model.fit(
-            x = x_input, 
-            y = y_train, 
-            batch_size = batch_size,
-            epochs = epochs, 
-            verbose = verbose,
-            validation_data = [input_val, y_val],
-            callbacks = callbacks
-        )
+        if self.callbacks != 'None':
+            kfold = KFold(n_splits=n_fold,random_state=70,shuffle=True)
+            histos = list()
+            for train, val in kfold.split(x_input[0]):
+                x_fold_train = list()
+                x_fold_val = list()
+                for i in range(len(x_input)):
+                    x_fold_train.append(x_input[i][train])
+                    x_fold_val.append(x_input[i][val])
+                y_fold_train, y_fold_val = y_train[train], y_train[val]
+                model = self.__build_model(embedding_matrix)
+                hist = model.fit(
+                    x_fold_train, 
+                    y_fold_train, 
+                    batch_size=batch_size, 
+                    epochs=epochs, 
+                    verbose=verbose,
+                    validation_data=[x_fold_val,y_fold_val],
+                    callbacks=[callbacks],
+                )
+                histos.append(hist)
 
-        self.data_val = [x_val, y_val]
+            val_f1 = np.zeros((len(histos), len(histos[0].history['val_f1'])))
+            for i in range(len(histos)):
+                print(histos[i].history['val_f1'])
+                val_f1[i]= np.asarray(histos[i].history['val_f1'])
+                
+            mean = np.mean(val_f1, axis=0)
+            error = np.std(val_f1, axis=0)
+
+            best_epoch = np.argmax(mean) + 1
+            print('Mean : ', mean)
+            print('Best f1 : ', np.max(mean))
+            print('Best epoch : ', best_epoch)
+        else:
+            model = self.__build_model(embedding_matrix)
+            history = model.fit(
+                x = x_input, 
+                y = y_train, 
+                batch_size = batch_size,
+                epochs = epochs, 
+                verbose = verbose,
+                # validation_data = [input_val, y_val],
+                callbacks = callbacks
+            )
+
+        # self.data_val = [x_val, y_val]
         self.model = model
-        self.history = history
+        # self.history = history
 
     def evaluate(self, x_train, y_train, x_test, y_test):
         if self.validation_data:
@@ -445,21 +483,109 @@ class AspectCategorizer():
             print(score)
             self.score.append(score)
 
-    def predict(self, new):
-        encoded_new = self.tokenizer.texts_to_sequences([new.lower()])
+    def get_entity(self, texts):
+        res = list()
+        for text in texts:
+            last_seen = ''
+            for ent in self.entity_list:
+                if ent in text and ent not in last_seen:
+                    last_seen = ent
+                    res.append(ent)
+        return res
+
+    def get_positionized(self, entity, texts):
+        list_position = list()
+        if entity != []:
+            for i, text in enumerate(texts):
+                dist = 0
+                position = list()
+                split = (text.lower()).split()
+                e_split = entity[i].split()
+                first = e_split[0]
+                loc = split.index(first)
+                dist = dist - loc
+                for j in range(0,loc):
+                    position.append(dist)
+                    dist += 1
+                for j in range(loc,loc+len(e_split)):
+                    position.append(dist)
+                for j in range(loc+len(e_split), len(split)):
+                    dist += 1
+                    position.append(dist)
+                for j in range(len(split), MAX_LENGTH):
+                    position.append(1000)
+                position = position[:MAX_LENGTH]
+                print('panjang posisi >>', len(position))
+                print(position)
+                list_position.append(position)
+        else:
+            for i, text in enumerate(texts):
+                dist = 0
+                position = list()
+                split = (text.lower()).split()
+
+                for j in range(0, len(split)):
+                    position.append(dist)
+                for j in range(len(split), MAX_LENGTH):
+                    position.append(1000)
+                position = position[:MAX_LENGTH]
+                print('panjang posisi >>', len(position))
+                print(position)
+                list_position.append(position)
+        print('shape posisi >>>', np.array(list_position).shape)
+        return np.array(list_position)
+
+    def tokenized_input(self, texts):
+        result = list()
+        for text in texts:
+            print(text)
+            payload = {}
+            payload['text'] = text
+            r = requests.post('http://43.245.191.194:8778/tokenizer', json=payload)
+            response = r.json()
+            token = response['tokens']
+            print(token)
+            token = ' '.join(token)
+            clean = re.sub(r"[\-,.;@#?!&$]+", " ", token.lower())
+            result.append(clean)
+        return result
+
+    def predict(self, new, enti):
+        print('################# aspect #################')
+        print('input >>>', new)
+        # enti = self.get_entity(new)
+        print('entity >>>', enti)
+        # tokenized = self.tokenized_input(new)
+        tokenized = new
+
+        new = list()
+        if enti != []:
+            for i in range(len(tokenized)):
+                temp = [tokenized[i] for _ in range(len(enti))]
+                new = new + temp
+        else:
+            new = tokenized
+
+        print('input 2 >>>', new)
+        position = self.get_positionized(enti, new)
+
+        encoded_new = self.tokenizer.texts_to_sequences(new)
         input_new = pad_sequences(encoded_new, maxlen=MAX_LENGTH, padding='post')
-        pred = self.model.predict(input_new)
+
+        y_pred = self.model.predict([input_new, position])
         
         label = list()
-        for i in range(len(pred)):
-            for j in range(len(pred[i])):
-                if (pred[i][j] > 0.5):
-                    label.append(self.aspects[j])
+        for i in range(len(y_pred)):
+            temp = list()
+            for j in range(len(y_pred[i])):
+                if (y_pred[i][j] > 0.5):
+                    temp.append(self.aspects[j])
+            label.append(temp)
 
         print("======================= PREDICTION =======================" )
-        print(new)
-        print(label)
-        return label
+        print('input 3 >>>', new)
+        print('aspect >>>', label)
+        return label, tokenized
 
     def save(self, dir_path):
         if not os.path.exists(dir_path):

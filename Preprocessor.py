@@ -2,6 +2,7 @@ import re
 import json
 import string
 import numpy as np
+import pickle
 
 from gensim.models import Word2Vec
 
@@ -34,6 +35,7 @@ class Preprocessor():
             pos_tag = 'embedding',
             dependency = True,
             use_entity = True,
+            context = False,
             position_embd = False,
             mask_entity = False, 
             use_lexicon = None,
@@ -47,6 +49,7 @@ class Preprocessor():
         self.pos_tag = pos_tag
         self.dependency = dependency
         self.use_entity = use_entity
+        self.context = context
         self.position_embd = position_embd
         self.mask_entity = mask_entity
         self.use_lexicon = use_lexicon
@@ -425,15 +428,69 @@ class Preprocessor():
                             position.append(temp[:MAX_LENGTH])
         return np.array(position)
 
+    def get_context(self, review_a, entity_file):
+        list_left = list()
+        list_right = list()
+        list_target = list()
+
+        idx = 0
+        for sentence in entity_file:            
+            for ent in sentence['info']:
+                left = list()
+                right = list()
+                target = list()
+                split = review_a[idx].split()
+                if ent['name'] != None:                
+                    entity = ent['name'].lower()
+                    entity = re.sub('ku', '', entity)
+                    entity = re.sub('-nya', '', entity)
+                    entity = re.sub('nya', '', entity)
+                    e_split = entity.split()
+                    e_first = e_split[0]
+                    idx += 1
+
+                    for token in split:
+                        if e_first in token:
+                            loc = split.index(token)
+                            break
+                    for j in range(0,loc):
+                        left.append(split[j])
+                    for j in range(len(e_split)):
+                        target.append(e_split[j])
+                    for j in range(loc+len(e_split), len(split)):
+                        right.append(split[j])
+                    
+                    for _ in ent['aspect']:
+                        list_left.append(' '.join(left))
+                        list_right.append(' '.join(right))
+                        list_target.append(' '.join(target))
+                else:
+                    split = review_a[idx].split()
+                    idx += 1    
+                    left = split
+                    for _ in ent['aspect']:
+                        list_left.append(' '.join(left))
+                        list_right.append(right)
+                        list_target.append(target)
+
+        return list_left, list_target, list_right
+
 
     def get_tokenized(self):
-        review = self.read_data_for_aspect(self.train_file)
+        # review = self.read_data_for_aspect(self.train_file)
 
-        if self.remove_punct:
-            tokenizer = Tokenizer(oov_token=True)
-        else:
-            tokenizer = Tokenizer(filters='', oov_token=True)
-        tokenizer.fit_on_texts(review)
+        # if self.remove_punct:
+        #     tokenizer = Tokenizer(oov_token=True)
+        # else:
+        #     tokenizer = Tokenizer(filters='\t\n', oov_token=True)
+        # tokenizer.fit_on_texts(review)
+
+        # with open('tokenizer_3.pickle', 'wb') as handle:
+        #     pickle.dump(tokenizer, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+        with open('tokenizer_3.pickle', 'rb') as handle:
+            tokenizer = pickle.load(handle)
+            
         return tokenizer
 
     def get_vocab_size(self, tokenizer):
@@ -446,16 +503,41 @@ class Preprocessor():
             review = self.read_data_for_aspect(self.train_file)
             review_test = self.read_data_for_aspect(self.test_file)
         elif self.module_name == 'sentiment':
-            review = self.read_data_for_sentiment(self.train_file)
-            review_test = self.read_data_for_sentiment(self.test_file)
+            if self.context:
+                review = self.read_data_for_aspect(self.train_file)
+                review_test = self.read_data_for_aspect(self.test_file)
 
-        encoded_data = tokenizer.texts_to_sequences(review)
-        encoded_data_test = tokenizer.texts_to_sequences(review_test)
+                left_tr, target_tr, right_tr = self.get_context(review, self.train_file)
+                left_te, target_te, right_te = self.get_context(review_test, self.test_file)
+            else:
+                review = self.read_data_for_sentiment(self.train_file)
+                review_test = self.read_data_for_sentiment(self.test_file)
 
-        x_train = pad_sequences(encoded_data, maxlen=MAX_LENGTH, padding='post')
-        x_test = pad_sequences(encoded_data_test, maxlen=MAX_LENGTH, padding='post')
+        if self.context:
+            train_left = tokenizer.texts_to_sequences(left_tr)    
+            train_left = pad_sequences(train_left, maxlen=MAX_LENGTH, padding='post')
+            train_target = tokenizer.texts_to_sequences(target_tr)    
+            train_target = pad_sequences(train_target, maxlen=MAX_LENGTH, padding='post')
+            train_right = tokenizer.texts_to_sequences(right_tr)    
+            train_right = pad_sequences(train_right, maxlen=MAX_LENGTH, padding='post')
 
-        return x_train, x_test
+            test_left = tokenizer.texts_to_sequences(left_te)    
+            test_left = pad_sequences(test_left, maxlen=MAX_LENGTH, padding='post')
+            test_target = tokenizer.texts_to_sequences(target_te)    
+            test_target = pad_sequences(test_target, maxlen=MAX_LENGTH, padding='post')
+            test_right = tokenizer.texts_to_sequences(right_te)    
+            test_right = pad_sequences(test_right, maxlen=MAX_LENGTH, padding='post')
+        else:
+            encoded_data = tokenizer.texts_to_sequences(review)
+            encoded_data_test = tokenizer.texts_to_sequences(review_test)
+
+            x_train = pad_sequences(encoded_data, maxlen=MAX_LENGTH, padding='post')
+            x_test = pad_sequences(encoded_data_test, maxlen=MAX_LENGTH, padding='post')
+
+        if self.context:
+            return train_left, train_target, train_right, test_left, test_target, test_right
+        else:
+            return x_train, x_test
 
     def get_embedding_matrix(self, tokenizer):
         w2v = self.__load_embedding()
@@ -572,7 +654,10 @@ class Preprocessor():
 
     def get_all_input_sentiment(self):
         if self.embedding:
-            x_train, x_test = self.get_encoded_input()
+            if self.context:
+                train_left, train_target, train_right, test_left, test_target, test_right = self.get_encoded_input()
+            else:
+                x_train, x_test = self.get_encoded_input()
             y_train, aspect_train = self.read_sentiment(self.train_file, x_train)
             y_test, aspect_test = self.read_sentiment(self.test_file, x_test)
         
@@ -605,3 +690,13 @@ class Preprocessor():
                 x_test = self.__concatenate(x_test, encoded_test)      
 
         return x_train, y_train, x_test, y_test
+
+    def list_entity(self):
+        ent = self.__load_txt('resource/entity_list.txt')
+        ent.sort(reverse=True)
+        
+        print('=======================')
+        print(ent)
+        return ent
+
+
